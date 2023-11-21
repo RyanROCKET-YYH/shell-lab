@@ -54,6 +54,15 @@ void sigint_handler(int sig);
 void sigquit_handler(int sig);
 void cleanup(void);
 
+/* tell if the command input is a valid number */
+bool is_number(const char *str) {
+    while (*str) {
+        if (isdigit(*str)) {
+            str ++;
+        }
+    }
+}
+
 /**
  * @brief <Write main's function header documentation. What does main do?>
  *
@@ -219,13 +228,19 @@ void eval(const char *cmdline) {
                 } else {
                     job_state state = (token.builtin == BUILTIN_BG) ? BG : FG;
                     job_set_state(job_id, state);
-                    sio_printf("[%d] (%d) %s\n", job_id, pid,
-                               job_get_cmdline(job_id));
+                    if (state == BG) {
+                        sio_printf("[%d] (%d) %s\n", job_id, pid,
+                                   job_get_cmdline(job_id));
+                    } else {
+                        while (fg_job() != 0) {
+                            sigsuspend(&prev_mask);
+                        }
+                    }
                 }
             }
         } else {
             sio_printf("%s command requires PID or %%jobid argument\n",
-                       (token.builtin == BUILTIN_BG) ? "bg" : "fg");
+                       token.argv[0]);
         }
         sigprocmask(SIG_SETMASK, &prev_mask, NULL); // unblock signals
 
