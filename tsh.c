@@ -224,7 +224,6 @@ void eval(const char *cmdline) {
         } else if (parse_result == PARSELINE_BG) { // background job handler
             sigprocmask(SIG_BLOCK, &mask, NULL);
             job_id = add_job(pid, BG, cmdline);
-            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
             sio_printf("[%d] (%d) %s\n", job_id, pid, cmdline);
         }
 
