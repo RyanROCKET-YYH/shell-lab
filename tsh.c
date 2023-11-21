@@ -8,8 +8,7 @@
  *  Follow the 15-213/18-213/15-513 style guide at
  *  http://www.cs.cmu.edu/~213/codeStyle.html.>
  *
- * @author Your Name <andrewid@andrew.cmu.edu>
- * TODO: Include your name and Andrew ID here.
+ * @author Yuhong YAO <yuhongy@andrew.cmu.edu>
  */
 
 #include "csapp.h"
@@ -161,7 +160,7 @@ int main(int argc, char **argv) {
 }
 
 /**
- * @brief <What does eval do?>
+ * @brief evaluate the command line argument and execute the inputs
  *
  * TODO: Delete this comment and replace it with your own.
  *
@@ -172,7 +171,7 @@ int main(int argc, char **argv) {
 void eval(const char *cmdline) {
     parseline_return parse_result;
     struct cmdline_tokens token;
-
+    pid_t pid;
     // Parse command line
     parse_result = parseline(cmdline, &token);
 
@@ -180,7 +179,63 @@ void eval(const char *cmdline) {
         return;
     }
 
+    /* figure 8.40 csapp*/
+    sigset_t mask_all, mask, prev_mask;
+    sigfillset(&mask_all);
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD);
+    sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGTSTP);
+
     // TODO: Implement commands here.
+    if (token.builtin == BUILTIN_QUIT) {
+        // handle builtin command
+        // sio_printf("Built in quit recognized, exiting the shell.\n");
+        exit(0);
+    } else if (token.builtin == BUILTIN_NONE) {
+        // handle external command
+
+        // Block signals before fork
+        sigprocmask(SIG_BLOCK, &mask, &prev_mask);
+
+        /* figure 8.24 csapp*/
+        if ((pid = fork()) == 0) { // child process
+            sigprocmask(SIG_SETMASK, &prev_mask,
+                        NULL); // unblock child process signals
+            setpgid(0, 0);     // in foreground process group
+            if (execve(token.argv[0], token.argv, environ) < 0) {
+                sio_printf("%s: Command not found.\n", token.argv[0]);
+                exit(0);
+            }
+        }
+
+        /* Parent waits for foreground job to terminate */
+        jid_t job_id = 0;
+        if (parse_result == PARSELINE_FG) {
+            sigprocmask(SIG_BLOCK, &mask_all, NULL); // parent process
+            job_id = add_job(pid, FG, cmdline);
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL); // unblock
+            int status;
+            if (waitpid(pid, &status, 0) < 0) {
+                perror("waitfg: waitpid error");
+            }
+            sigprocmask(SIG_BLOCK, &mask, &prev_mask);
+            if (WIFEXITED(status)) {
+                delete_job(job_id);
+            } else if (WIFSTOPPED(status)) {
+                job_set_state(job_id, ST);
+            }
+        } else if (parse_result == PARSELINE_BG) { // background job handler
+            sigprocmask(SIG_BLOCK, &mask_all, NULL);
+            job_id = add_job(pid, BG, cmdline);
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+            sio_printf("[%d] (%d) %s\n", job_id, pid, cmdline);
+        }
+
+        // Unblock all signals
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);
+    }
+    return;
 }
 
 /*****************
