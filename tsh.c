@@ -216,13 +216,10 @@ void eval(const char *cmdline) {
         if (parse_result == PARSELINE_FG) {
             sigprocmask(SIG_BLOCK, &mask, NULL);
             job_id = add_job(pid, FG, cmdline);
-            sigset_t suspend_mask;
-            sigemptyset(&suspend_mask);
-            sigaddset(&suspend_mask, SIGINT);
-            sigaddset(&suspend_mask, SIGTSTP);
-            while (job_exists(job_id)) {
-                sigsuspend(&suspend_mask);
+            while (fg_job() != 0) {
+                sigsuspend(&prev_mask);
             }
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL); // optionally unblock
 
         } else if (parse_result == PARSELINE_BG) { // background job handler
             sigprocmask(SIG_BLOCK, &mask, NULL);
@@ -254,32 +251,66 @@ void sigchld_handler(int sig) {
     int status;
     sigset_t mask, prev;
     sigfillset(&mask);
-    sigprocmask(SIG_BLOCK, &mask, &prev);
     while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
+        sigprocmask(SIG_BLOCK, &mask, &prev);
         if (WIFEXITED(status)) { // child terminated normally
             delete_job(job_from_pid(
                 pid)); // delete the child from job list if terminated
-        } else if (WIFSTOPPED(status)) {
+        } else if (WIFSTOPPED(status)) { // child is stopped
+            sio_printf("Job [%d] (%d) stopped by signal %d\n",
+                       job_from_pid(pid), pid, WSTOPSIG(status));
             job_set_state(job_from_pid(pid), ST);
+        } else if (WIFSIGNALED(status)) { // child is terminated
+            sio_printf("Job [%d] (%d) terminated by signal %d\n",
+                       job_from_pid(pid), pid, WTERMSIG(status));
+            delete_job(job_from_pid(pid));
         }
+        sigprocmask(SIG_SETMASK, &prev, NULL);
     }
-    sigprocmask(SIG_SETMASK, &prev, NULL);
     errno = olderrno; // restore the old errno
 }
 
 /**
- * @brief <What does sigint_handler do?>
+ * @brief Handles SIGINT (ctrl + c)
  *
- * TODO: Delete this comment and replace it with your own.
+ * This handler is called when the shell receives a SIGINT signal, it will catch
+ * the signal and forward to the entire process group that contains the
+ * foreground job.
  */
-void sigint_handler(int sig) {}
+void sigint_handler(int sig) {
+    int olderrno = errno;
+    sigset_t mask, prev;
+    sigfillset(&mask);
+    sigprocmask(SIG_BLOCK, &mask, &prev);
+    jid_t job_id = fg_job();
+    if (job_id != 0) {
+        pid = job_get_pid(job_id);
+        sigprocmask(SIG_SETMASK, &prev, NULL);
+        kill(-pid, SIGINT); // pid < 0, kills every process in pg
+    }
+    errno = olderrno;
+}
 
 /**
- * @brief <What does sigtstp_handler do?>
+ * @brief Handles SIGTSTP (ctrl + z)
  *
- * TODO: Delete this comment and replace it with your own.
+ * This function is called when the shell receives a SIGTSTP signal, it is
+ * similar to SIGINT handler, except it will be able to continue after resume
+ * after receive a SIGCONT signal
  */
-void sigtstp_handler(int sig) {}
+void sigtstp_handler(int sig) {
+    int olderrno = errno;
+    sigset_t mask, prev;
+    sigfillset(&mask);
+    sigprocmask(SIG_BLOCK, &mask, &prev);
+    jid_t job_id = fg_job();
+    if (job_id != 0) {
+        pid = job_get_pid(job_id);
+        sigprocmask(SIG_SETMASK, &prev, NULL);
+        kill(-pid, SIGTSTP); // pid < 0, kills every process in pg
+    }
+    errno = olderrno;
+}
 
 /**
  * @brief Attempt to clean up global resources when the program exits.
