@@ -55,12 +55,14 @@ void sigquit_handler(int sig);
 void cleanup(void);
 
 /* tell if the command input is a valid number */
-bool is_number(const char *str) {
-    while (*str) {
-        if (isdigit(*str)) {
-            str ++;
+bool is_number(const char *input) {
+    while (*input) {
+        if (!isdigit(*input)) {
+            return false;
         }
+        input++;
     }
+    return true;
 }
 
 /**
@@ -205,21 +207,38 @@ void eval(const char *cmdline) {
                     &prev_mask); // block all signals before accessing joblits
         jid_t job_id = 0;
         bool pid_cmd = false;
+        bool cmd_number = false;
         if (token.argc > 1) {
             if (token.argv[1][0] == '%') {
-                job_id =
-                    atoi(&token.argv[1][1]); // if the passing argument is jid
+                if (is_number(&token.argv[1][1])) {
+                    job_id = atoi(
+                        &token.argv[1][1]); // if the passing argument is jid
+                    cmd_number = true;
+                }
             } else {
-                pid = atoi(token.argv[1]); // if the passing argument is pid
-                job_id = job_from_pid(pid);
-                pid_cmd = true;
+                if (is_number(token.argv[1])) {
+                    pid = atoi(token.argv[1]); // if the passing argument is pid
+                    job_id = job_from_pid(pid);
+                    pid_cmd = true;
+                    cmd_number = true;
+                }
             }
 
             if (!job_exists(job_id) || job_id == 0) {
                 if (pid_cmd) {
-                    sio_printf("(%s): No such job\n", token.argv[1]);
+                    if (cmd_number) {
+                        sio_printf("(%s): No such job\n", token.argv[1]);
+                    } else {
+                        sio_printf("%s: argument must be a PID or %%jobid\n",
+                                   token.argv[0]);
+                    }
                 } else {
-                    sio_printf("%s: No such job\n", token.argv[1]);
+                    if (cmd_number) {
+                        sio_printf("%s: No such job\n", token.argv[1]);
+                    } else {
+                        sio_printf("%s: argument must be a PID or %%jobid\n",
+                                   token.argv[0]);
+                    }
                 }
             } else {
                 pid = job_get_pid(job_id);
