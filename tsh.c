@@ -180,19 +180,23 @@ void eval(const char *cmdline) {
         return;
     }
 
+    sigset_t mask, prev_mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGCHLD);
+    sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGTSTP);
+
     // Implement builtin commands here.
     if (token.builtin == BUILTIN_QUIT) {
         // handle builtin command
         // sio_printf("Built in quit recognized, exiting the shell.\n");
         exit(0);
+    } else if (token.builtin == BUILTIN_JOBS) {
+        sigprocmask(SIG_BLOCK, &mask, &prev_mask);
+        list_jobs(1);
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL);
     } else if (token.builtin == BUILTIN_NONE) {
         // handle external command
-        sigset_t mask, prev_mask;
-        sigemptyset(&mask);
-        sigaddset(&mask, SIGCHLD);
-        sigaddset(&mask, SIGINT);
-        sigaddset(&mask, SIGTSTP);
-
         // Block signals before fork
         sigprocmask(SIG_BLOCK, &mask, &prev_mask);
 
@@ -202,7 +206,7 @@ void eval(const char *cmdline) {
                         NULL); // unblock child process signals
             setpgid(0, 0);     // in foreground process group
             if (execve(token.argv[0], token.argv, environ) < 0) {
-                sio_printf("%s: Command not found.\n", token.argv[0]);
+                sio_printf("%s: No such file or directory\n", token.argv[0]);
                 exit(0);
             }
         }
@@ -223,6 +227,7 @@ void eval(const char *cmdline) {
         } else if (parse_result == PARSELINE_BG) { // background job handler
             sigprocmask(SIG_BLOCK, &mask, NULL);
             job_id = add_job(pid, BG, cmdline);
+            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
             sio_printf("[%d] (%d) %s\n", job_id, pid, cmdline);
         }
 
