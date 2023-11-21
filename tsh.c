@@ -191,6 +191,44 @@ void eval(const char *cmdline) {
         // handle builtin command
         // sio_printf("Built in quit recognized, exiting the shell.\n");
         exit(0);
+    } else if (token.builtin == BUILTIN_BG || token.builtin == BUILTIN_FG) {
+        sigprocmask(SIG_BLOCK, &mask,
+                    &prev_mask); // block all signals before accessing joblits
+        jid_t job_id = 0;
+        bool pid_cmd = false;
+        if (token.argc > 1) {
+            if (token.argv[1][0] == '%') {
+                job_id =
+                    atoi(&token.argv[1][1]); // if the passing argument is jid
+            } else {
+                pid = atoi(token.argv[1]); // if the passing argument is pid
+                job_id = job_from_pid(pid);
+                pid_cmd = true;
+            }
+
+            if (!job_exists(job_id) || job_id == 0) {
+                if (pid_cmd) {
+                    sio_printf("(%s): No such job\n", token.argv[1]);
+                } else {
+                    sio_printf("%s: No such job\n", token.argv[1]);
+                }
+            } else {
+                pid = job_get_pid(job_id);
+                if (kill(-pid, SIGCONT) < 0) { // send SIGCONT signal to resume
+                    sio_eprintf("Error sending SIGCONT to job %d", job_id);
+                } else {
+                    job_state state = (token.builtin == BUILTIN_BG) ? BG : FG;
+                    job_set_state(job_id, state);
+                    sio_printf("[%d] (%d) %s\n", job_id, pid,
+                               job_get_cmdline(job_id));
+                }
+            }
+        } else {
+            sio_printf("%s command requires PID or %%jobid argument\n",
+                       (token.builtin == BUILTIN_BG) ? "bg" : "fg");
+        }
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL); // unblock signals
+
     } else if (token.builtin == BUILTIN_JOBS) {
         sigprocmask(SIG_BLOCK, &mask, &prev_mask);
         list_jobs(1);
