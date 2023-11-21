@@ -43,6 +43,8 @@
 #define dbg_ensures(...)
 #endif
 
+volatile sig_atomic_t pid;
+
 /* Function prototypes */
 void eval(const char *cmdline);
 
@@ -171,29 +173,25 @@ int main(int argc, char **argv) {
 void eval(const char *cmdline) {
     parseline_return parse_result;
     struct cmdline_tokens token;
-    pid_t pid;
+
     // Parse command line
     parse_result = parseline(cmdline, &token);
-
     if (parse_result == PARSELINE_ERROR || parse_result == PARSELINE_EMPTY) {
         return;
     }
 
-    /* figure 8.40 csapp*/
-    sigset_t mask_all, mask, prev_mask;
-    sigfillset(&mask_all);
-    sigemptyset(&mask);
-    sigaddset(&mask, SIGCHLD);
-    sigaddset(&mask, SIGINT);
-    sigaddset(&mask, SIGTSTP);
-
-    // TODO: Implement commands here.
+    // Implement builtin commands here.
     if (token.builtin == BUILTIN_QUIT) {
         // handle builtin command
         // sio_printf("Built in quit recognized, exiting the shell.\n");
         exit(0);
     } else if (token.builtin == BUILTIN_NONE) {
         // handle external command
+        sigset_t mask, prev_mask;
+        sigemptyset(&mask);
+        sigaddset(&mask, SIGCHLD);
+        sigaddset(&mask, SIGINT);
+        sigaddset(&mask, SIGTSTP);
 
         // Block signals before fork
         sigprocmask(SIG_BLOCK, &mask, &prev_mask);
@@ -212,23 +210,19 @@ void eval(const char *cmdline) {
         /* Parent waits for foreground job to terminate */
         jid_t job_id = 0;
         if (parse_result == PARSELINE_FG) {
-            sigprocmask(SIG_BLOCK, &mask_all, NULL); // parent process
+            sigprocmask(SIG_BLOCK, &mask, NULL);
             job_id = add_job(pid, FG, cmdline);
-            sigprocmask(SIG_SETMASK, &prev_mask, NULL); // unblock
-            int status;
-            if (waitpid(pid, &status, 0) < 0) {
-                perror("waitfg: waitpid error");
+            sigset_t suspend_mask;
+            sigemptyset(&suspend_mask);
+            sigaddset(&suspend_mask, SIGINT);
+            sigaddset(&suspend_mask, SIGTSTP);
+            while (job_exists(job_id)) {
+                sigsuspend(&suspend_mask);
             }
-            sigprocmask(SIG_BLOCK, &mask, &prev_mask);
-            if (WIFEXITED(status)) {
-                delete_job(job_id);
-            } else if (WIFSTOPPED(status)) {
-                job_set_state(job_id, ST);
-            }
+
         } else if (parse_result == PARSELINE_BG) { // background job handler
-            sigprocmask(SIG_BLOCK, &mask_all, NULL);
+            sigprocmask(SIG_BLOCK, &mask, NULL);
             job_id = add_job(pid, BG, cmdline);
-            sigprocmask(SIG_SETMASK, &prev_mask, NULL);
             sio_printf("[%d] (%d) %s\n", job_id, pid, cmdline);
         }
 
@@ -243,11 +237,30 @@ void eval(const char *cmdline) {
  *****************/
 
 /**
- * @brief <What does sigchld_handler do?>
+ * @brief handles SIGCHLD signal
  *
- * TODO: Delete this comment and replace it with your own.
+ * This handler is called when SIGCHLD signal is received, meaning a child
+ * process has stopped or terminated. The handler reaps any child process that
+ * has been stopped or terminated. It deletes the job from joblist if terminated
+ * or change the state in job list if stopped.
  */
-void sigchld_handler(int sig) {}
+void sigchld_handler(int sig) {
+    int olderrno = errno; // save the current errno
+    int status;
+    sigset_t mask, prev;
+    sigfillset(&mask);
+    sigprocmask(SIG_BLOCK, &mask, &prev);
+    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
+        if (WIFEXITED(status)) { // child terminated normally
+            delete_job(job_from_pid(
+                pid)); // delete the child from job list if terminated
+        } else if (WIFSTOPPED(status)) {
+            job_set_state(job_from_pid(pid), ST);
+        }
+    }
+    sigprocmask(SIG_SETMASK, &prev, NULL);
+    errno = olderrno; // restore the old errno
+}
 
 /**
  * @brief <What does sigint_handler do?>
