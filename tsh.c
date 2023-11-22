@@ -195,8 +195,8 @@ void input_redirection(const char *infile) {
  * @param outfile The path of the file to redirect output to.
  */
 void output_redirection(const char *outfile) {
-    int outfd =
-        open(outfile, O_CREAT | O_TRUNC | O_WRONLY, (DEF_MODE) & ~(DEF_UMASK));
+    int outfd = open(outfile, O_CREAT | O_TRUNC | O_WRONLY,
+                     (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH));
     if (outfd < 0) {
         perror(outfile);
         exit(1);
