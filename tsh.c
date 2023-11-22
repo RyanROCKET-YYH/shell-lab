@@ -56,7 +56,7 @@ void cleanup(void);
 
 /**
  * @brief Checks if a string represents a valid number.
- * 
+ *
  * @param input The string to be checked.
  * @return true if the string is a valid number, false otherwise.
  */
@@ -78,8 +78,10 @@ bool is_number(const char *input) {
  * second argv, and check if the following is number and get job id or pid, if
  * it is pid, use the job_from_pid to get the corresponding jid
  * @param token Struct that include user cmdline inputs tokens
- * @param pid_cmd Pointer to a boolean used to tell if it is a giving a pid not job id
- * @param cmd_number Pointer to a boolean tell if the arguments after bg or fg is number
+ * @param pid_cmd Pointer to a boolean used to tell if it is a giving a pid not
+ * job id
+ * @param cmd_number Pointer to a boolean tell if the arguments after bg or fg
+ * is number
  *
  * @return job_id
  */
@@ -321,6 +323,26 @@ void eval(const char *cmdline) {
             sigprocmask(SIG_SETMASK, &prev_mask,
                         NULL); // unblock child process signals
             setpgid(0, 0);     // in foreground process group
+
+            if (token.infile != NULL) {
+                int infd = open(token.infile, O_RDONLY);
+                if (infd < 0) {
+                    sio_printf("%s: No such file or directory", token.infile);
+                }
+                dup2(infd, STDIN_FILENO);
+                close(infd);
+            }
+
+            if (token.outfile != NULL) {
+                int outfd =
+                    open(token.outfile, O_CREAT | O_TRUNC | O_WRONLY, 0664);
+                if (outfd < 0) {
+                    sio_printf("%s: No such file or directory", token.outfile);
+                }
+                dup2(outfd, STDOUT_FILENO);
+                close(outfd);
+            }
+
             if (execve(token.argv[0], token.argv, environ) < 0) {
                 sio_printf("%s: No such file or directory\n", token.argv[0]);
                 exit(0);
