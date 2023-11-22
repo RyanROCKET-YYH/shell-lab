@@ -2,11 +2,22 @@
  * @file tsh.c
  * @brief A tiny shell program with job control
  *
- * TODO: Delete this comment and replace it with your own.
- * <The line above is not a sufficient documentation.
- *  You will need to write your program documentation.
- *  Follow the 15-213/18-213/15-513 style guide at
- *  http://www.cs.cmu.edu/~213/codeStyle.html.>
+ * This shell program is a tiny shell program with command line inputs.
+ * It supports features such as job control, builtin commands (jobs, fg, bg,
+ * quit), input and output redirection using <,>, executing external commands
+ * and signal handling. The purpose is to get a better understanding of I/O and
+ * Exceptional Contrl Flow and Signals.
+ *
+ * Specifications:
+ * - Builtin Commands: quit, jobs, fg and bg.
+ * - Job Control: Manages background and foreground processes, allowing the
+ *   user to run processes in the background ('&'), bring background processes
+ *   to the foreground, terminate (Ctrl-C) and stop (Ctrl-Z) and
+ *   continue (SIGCONT) processes.
+ * - Signal Handling: Intercepts and handles signals like SIGINT (Ctrl-C) and
+ *   SIGTSTP (Ctrl-Z) for job control.
+ * - I/O Redirection: Allow redirecting commands, such as > (outfile) and <
+ *   (infile) make inputs and outpus to files.
  *
  * @author Yuhong YAO <yuhongy@andrew.cmu.edu>
  */
@@ -154,14 +165,55 @@ void resume_job(jid_t job_id, struct cmdline_tokens token, sigset_t prev_mask) {
 }
 
 /**
- * @brief <Write main's function header documentation. What does main do?>
+ * @brief Redirects stdin to a file.
  *
- * TODO: Delete this comment and replace it with your own.
+ * This function opens a file for reading and duplicates its file descriptor
+ * to STDIN_FILENO. It ensures that any read operations in the shell or a
+ * child process will now read from the specified file instead of the standard
+ * input.
  *
- * "Each function should be prefaced with a comment describing the purpose
- *  of the function (in a sentence or two), the function's arguments and
- *  return value, any error cases that are relevant to the caller,
- *  any pertinent side effects, and any assumptions that the function makes."
+ * @param infile The path of the file to redirect input from.
+ */
+void input_redirection(const char *infile) {
+    int infd = open(infile, O_RDONLY);
+    if (infd < 0) {
+        perror(infile);
+        exit(1);
+    }
+    dup2(infd, STDIN_FILENO);
+    close(infd);
+}
+
+/**
+ * @brief Redirects stdout to a file.
+ *
+ * This function opens (or creates if it does not exist) a file for writing.
+ * It sets the file's mode to allow read and write permissions for the user,
+ * and read permissions for group and others. The file descriptor is then
+ * duplicated to STDOUT_FILENO.
+ *
+ * @param outfile The path of the file to redirect output to.
+ */
+void output_redirection(const char *outfile) {
+    int outfd =
+        open(outfile, O_CREAT | O_TRUNC | O_WRONLY, (DEF_MODE) & ~(DEF_UMASK));
+    if (outfd < 0) {
+        perror(outfile);
+        exit(1);
+    }
+    dup2(outfd, STDOUT_FILENO);
+    close(outfd);
+}
+
+/**
+ * @brief Main entry of the shell
+ *
+ * It set the stderr to stdout so that the driver will get all output, parse
+ * command line such as h,v,p; Install the signal handler, create environment,
+ * initilize the job list and main loop for eval since this is a long running
+ * process, it will all quit when called or aborted. it also handles interactive
+ * command input and execution of commands, along with job control.
+ *
  */
 int main(int argc, char **argv) {
     int c;
@@ -263,11 +315,10 @@ int main(int argc, char **argv) {
 /**
  * @brief evaluate the command line argument and execute the inputs
  *
- * TODO: Delete this comment and replace it with your own.
- *
- * NOTE: The shell is supposed to be a long-running process, so this function
- *       (and its helpers) should avoid exiting on error.  This is not to say
- *       they shouldn't detect and print (or otherwise handle) errors!
+ * This function parses the command line input, handles built-in commands such
+ * as quit, jobs, bg, fg, and executes external commands. It also sets up signal
+ * blocking and handling as necessary for job list control and implements I/O
+ * redirection when specified in the command.
  */
 void eval(const char *cmdline) {
     parseline_return parse_result;
@@ -311,7 +362,22 @@ void eval(const char *cmdline) {
         sigprocmask(SIG_SETMASK, &prev_mask, NULL); // unblock signal
     } else if (token.builtin == BUILTIN_JOBS) {
         sigprocmask(SIG_BLOCK, &mask, &prev_mask);
-        list_jobs(1);
+        // handles jobs redirection in child process
+        if (token.outfile != NULL) {
+            if ((pid = fork()) == 0) {
+                output_redirection(token.outfile);
+                list_jobs(STDOUT_FILENO);
+                exit(0);
+            } else if (pid > 0) {
+                int status;
+                // wait the child to finish
+                waitpid(pid, &status, 0);
+            } else {
+                perror("fork");
+            }
+        } else {
+            list_jobs(STDOUT_FILENO);
+        }
         sigprocmask(SIG_SETMASK, &prev_mask, NULL);
     } else if (token.builtin == BUILTIN_NONE) {
         // handle external command
@@ -325,27 +391,21 @@ void eval(const char *cmdline) {
             setpgid(0, 0);     // in foreground process group
 
             if (token.infile != NULL) {
-                int infd = open(token.infile, O_RDONLY);
-                if (infd < 0) {
-                    sio_printf("%s: No such file or directory", token.infile);
-                }
-                dup2(infd, STDIN_FILENO);
-                close(infd);
+                input_redirection(token.infile);
             }
 
             if (token.outfile != NULL) {
-                int outfd =
-                    open(token.outfile, O_CREAT | O_TRUNC | O_WRONLY, 0664);
-                if (outfd < 0) {
-                    sio_printf("%s: No such file or directory", token.outfile);
-                }
-                dup2(outfd, STDOUT_FILENO);
-                close(outfd);
+                output_redirection(token.outfile);
             }
 
             if (execve(token.argv[0], token.argv, environ) < 0) {
-                sio_printf("%s: No such file or directory\n", token.argv[0]);
-                exit(0);
+                if (errno == EACCES) {
+                    sio_printf("%s: Permission denied\n", token.argv[0]);
+                } else if (errno == ENOENT) {
+                    sio_printf("%s: No such file or directory\n",
+                               token.argv[0]);
+                }
+                exit(1); // child process, don't effect parent to exit
             }
         }
 
