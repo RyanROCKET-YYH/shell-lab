@@ -54,7 +54,12 @@ void sigint_handler(int sig);
 void sigquit_handler(int sig);
 void cleanup(void);
 
-/* tell if the command input is a valid number */
+/**
+ * @brief Checks if a string represents a valid number.
+ * 
+ * @param input The string to be checked.
+ * @return true if the string is a valid number, false otherwise.
+ */
 bool is_number(const char *input) {
     while (*input) {
         if (!isdigit(*input)) {
@@ -63,6 +68,87 @@ bool is_number(const char *input) {
         input++;
     }
     return true;
+}
+
+/**
+ * @brief This function is used to parse the job_id or pid when we have builtin
+ * bg and fg
+ *
+ * tell if it is a job_id or pid from input by checking if there is a % in the
+ * second argv, and check if the following is number and get job id or pid, if
+ * it is pid, use the job_from_pid to get the corresponding jid
+ * @param token Struct that include user cmdline inputs tokens
+ * @param pid_cmd Pointer to a boolean used to tell if it is a giving a pid not job id
+ * @param cmd_number Pointer to a boolean tell if the arguments after bg or fg is number
+ *
+ * @return job_id
+ */
+jid_t get_jid(struct cmdline_tokens token, bool *pid_cmd, bool *cmd_number) {
+    jid_t job_id = 0;
+    if (token.argv[1][0] == '%') {
+        if (is_number(&token.argv[1][1])) {
+            job_id = atoi(&token.argv[1][1]);
+            *cmd_number = true;
+        }
+    } else {
+        if (is_number(&token.argv[1][1])) {
+            pid = atoi(token.argv[1]);
+            job_id = job_from_pid(pid);
+            *pid_cmd = true;
+            *cmd_number = true;
+        }
+    }
+    return job_id;
+}
+
+/**
+ * @brief Prints error messages for bg or fg commands.
+ *
+ * @param token struct that include user cmdline inputs tokens
+ * @param cmd_number Boolean indicating if the command argument is a number.
+ * @param pid_cmd Boolean indicating if a PID was provided.
+ */
+void print_error_builtin(struct cmdline_tokens token, bool cmd_number,
+                         bool pid_cmd) {
+    if (pid_cmd) {
+        if (cmd_number) {
+            sio_printf("(%s): No such job\n", token.argv[1]);
+        } else {
+            sio_printf("%s: argument must be a PID or %%jobid\n",
+                       token.argv[0]);
+        }
+    } else {
+        if (cmd_number) {
+            sio_printf("%s: No such job\n", token.argv[1]);
+        } else {
+            sio_printf("%s: argument must be a PID or %%jobid\n",
+                       token.argv[0]);
+        }
+    }
+}
+
+/**
+ * @brief resume jobs by sending SIGCONT to those stopped job
+ *
+ * @param job_id The job id of the job to be resumed.
+ * @param token Struct that include user cmdline inputs tokens
+ * @param prev_mask The previous signal mask to restore after resuming the job.
+ */
+void resume_job(jid_t job_id, struct cmdline_tokens token, sigset_t prev_mask) {
+    pid = job_get_pid(job_id);
+    if (kill(-pid, SIGCONT) < 0) { // send SIGCONT signal to resume
+        sio_eprintf("Error sending SIGCONT to job %d", job_id);
+    } else {
+        job_state state = (token.builtin == BUILTIN_BG) ? BG : FG;
+        job_set_state(job_id, state);
+        if (state == BG) {
+            sio_printf("[%d] (%d) %s\n", job_id, pid, job_get_cmdline(job_id));
+        } else {
+            while (fg_job() != 0) {
+                sigsuspend(&prev_mask);
+            }
+        }
+    }
 }
 
 /**
@@ -205,64 +291,22 @@ void eval(const char *cmdline) {
     } else if (token.builtin == BUILTIN_BG || token.builtin == BUILTIN_FG) {
         sigprocmask(SIG_BLOCK, &mask,
                     &prev_mask); // block all signals before accessing joblits
-        jid_t job_id = 0;
         bool pid_cmd = false;
         bool cmd_number = false;
         if (token.argc > 1) {
-            if (token.argv[1][0] == '%') {
-                if (is_number(&token.argv[1][1])) {
-                    job_id = atoi(
-                        &token.argv[1][1]); // if the passing argument is jid
-                    cmd_number = true;
-                }
-            } else {
-                if (is_number(token.argv[1])) {
-                    pid = atoi(token.argv[1]); // if the passing argument is pid
-                    job_id = job_from_pid(pid);
-                    pid_cmd = true;
-                    cmd_number = true;
-                }
-            }
+            jid_t job_id = get_jid(token, &pid_cmd, &cmd_number);
 
             if (!job_exists(job_id) || job_id == 0) {
-                if (pid_cmd) {
-                    if (cmd_number) {
-                        sio_printf("(%s): No such job\n", token.argv[1]);
-                    } else {
-                        sio_printf("%s: argument must be a PID or %%jobid\n",
-                                   token.argv[0]);
-                    }
-                } else {
-                    if (cmd_number) {
-                        sio_printf("%s: No such job\n", token.argv[1]);
-                    } else {
-                        sio_printf("%s: argument must be a PID or %%jobid\n",
-                                   token.argv[0]);
-                    }
-                }
+                print_error_builtin(token, cmd_number, pid_cmd);
             } else {
-                pid = job_get_pid(job_id);
-                if (kill(-pid, SIGCONT) < 0) { // send SIGCONT signal to resume
-                    sio_eprintf("Error sending SIGCONT to job %d", job_id);
-                } else {
-                    job_state state = (token.builtin == BUILTIN_BG) ? BG : FG;
-                    job_set_state(job_id, state);
-                    if (state == BG) {
-                        sio_printf("[%d] (%d) %s\n", job_id, pid,
-                                   job_get_cmdline(job_id));
-                    } else {
-                        while (fg_job() != 0) {
-                            sigsuspend(&prev_mask);
-                        }
-                    }
-                }
+                resume_job(job_id, token, prev_mask);
             }
+
         } else {
             sio_printf("%s command requires PID or %%jobid argument\n",
                        token.argv[0]);
         }
-        sigprocmask(SIG_SETMASK, &prev_mask, NULL); // unblock signals
-
+        sigprocmask(SIG_SETMASK, &prev_mask, NULL); // unblock signal
     } else if (token.builtin == BUILTIN_JOBS) {
         sigprocmask(SIG_BLOCK, &mask, &prev_mask);
         list_jobs(1);
